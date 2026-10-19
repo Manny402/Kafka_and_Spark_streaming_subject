@@ -2,10 +2,6 @@
 
 Project for the Kafka and PySpark Structured Streaming assignment.
 
-For a guided first experiment with an explanation of each command, follow [Hướng dẫn lắp ráp Kafka → Spark](HUONG_DAN_LAP_RAP.md).
-
-After exploring the CSV files, follow [Hướng dẫn viết producer](HUONG_DAN_PRODUCER.md) to convert five rows to JSON, send them to Kafka, and observe delivery before completing the producer's command-line options and logging.
-
 ## Architecture
 
 ```mermaid
@@ -62,8 +58,6 @@ docker compose ps
 The first startup downloads the pinned images. Docker Desktop should then show `retail_rocket_streaming` as a separate group. The Spark container remains idle until a streaming application is submitted in a later stage.
 
 To stop this project's containers, run `docker compose stop` from this directory. To start them again, run `docker compose start`. Do not run these commands from another project's directory.
-
-The `retail-rocket-events` topic was created and verified on 2026-10-18 with 2 partitions and replication factor 1. The next guided exercise is to send a JSON with the console producer and read it with the console consumer; see steps 5–6 in [HUONG_DAN_LAP_RAP.md](HUONG_DAN_LAP_RAP.md).
 
 ## Python environment for the producer
 
