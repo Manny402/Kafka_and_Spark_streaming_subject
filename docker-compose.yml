@@ -10,7 +10,7 @@ services:
       KAFKA_NODE_ID: "1"
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT_HOST://localhost:9092,PLAINTEXT://kafka:19092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT_HOST://127.0.0.1:9092,PLAINTEXT://kafka:19092"
       KAFKA_LISTENERS: "CONTROLLER://:29093,PLAINTEXT_HOST://:9092,PLAINTEXT://:19092"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093"
       KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
@@ -23,6 +23,9 @@ services:
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: "1"
       KAFKA_NUM_PARTITIONS: "2"
       KAFKA_LOG_DIRS: "/tmp/kraft-combined-logs"
+    volumes:
+      - "kafka-events:/tmp/kraft-combined-logs"
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
       interval: 10s
@@ -30,15 +33,44 @@ services:
       retries: 10
       start_period: 30s
 
-  spark:
-    image: apache/spark:4.2.0-python3
+  kafka-init:
+    image: apache/kafka:4.3.1
     depends_on:
       kafka:
         condition: service_healthy
-    command: ["sleep", "infinity"]
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic retail-rocket-events --partitions 2 --replication-factor 1
+        count=$$(/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic retail-rocket-events | sed -n 's/.*PartitionCount: \([0-9]*\).*/\1/p')
+        if [ "$$count" -lt 2 ]; then
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --alter --topic retail-rocket-events --partitions 2
+        fi
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic retail-rocket-events
+
+  spark:
+    image: apache/spark:4.2.0-python3
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - local[2]
+      - --conf
+      - spark.jars.ivy=/tmp/ivy
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0
+      - /opt/project/streaming_etl.py
+    environment:
+      PYTHONUNBUFFERED: "1"
+    stop_grace_period: 45s
     working_dir: /opt/project
     volumes:
       - ".:/opt/project"
       - "./retailrocket:/opt/data:ro"
     ports:
       - "127.0.0.1:4040:4040"
+
+volumes:
+  kafka-events:
