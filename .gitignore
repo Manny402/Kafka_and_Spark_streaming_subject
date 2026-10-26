@@ -2,8 +2,7 @@
 # Kaggle Retail Rocket Dataset - Heavy Files
 # ==========================================
 # item_properties part 1 (~484MB) & part 2 (~409MB) exceed GitHub's 100MB limit
-retailrocket/item_properties*.csv
-Part_B/retailrocket/item_properties*.csv
+retailrocket/
 
 # Temporary scratch and extract files
 scratch_inspect.txt
