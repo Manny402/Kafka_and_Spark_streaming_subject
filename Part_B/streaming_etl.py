@@ -41,10 +41,20 @@ def parse_events(raw):
 
 
 def compute_intent(events):
-    """Track each visitor/item in overlapping five-minute event-time windows."""
+    """Track each visitor/item in overlapping event-time windows with watermarking.
+    
+    Assignment Specification:
+      - 10-minute sliding window with 5-minute watermark
+      - Engagement scoring: view = 1, addtocart = 5, transaction = 10
+      - Trigger recommendation when high intent is detected (addtocart without transaction)
+    """
+    watermark_duration = os.getenv("STREAM_WATERMARK", "5 minutes")
+    window_duration = os.getenv("STREAM_WINDOW", "10 minutes")
+    slide_duration = os.getenv("STREAM_SLIDE", "2 minutes")
+
     counts = (
-        events.withWatermark("event_time", "2 minutes")
-        .groupBy(F.window("event_time", "5 minutes", "1 minute"), "visitorid", "itemid")
+        events.withWatermark("event_time", watermark_duration)
+        .groupBy(F.window("event_time", window_duration, slide_duration), "visitorid", "itemid")
         .agg(
             F.count("*").alias("event_count"),
             F.sum(F.when(F.col("event") == "view", 1).otherwise(0)).alias("views"),
@@ -55,20 +65,31 @@ def compute_intent(events):
         )
     )
     return (
-        counts.withColumn("intent_score", F.col("views") + 5 * F.col("carts"))
-        .withColumn("recommendation_active",
-                    (F.col("carts") > 0) & (F.col("transactions") == 0)
-                    & (F.col("intent_score") >= 5))
-        .withColumn("recommended_itemid",
-                    F.when(F.col("recommendation_active"), F.col("itemid")))
-        .withColumn("status", F.when(F.col("transactions") > 0, "purchased")
-                    .when(F.col("recommendation_active"), "recommend")
-                    .otherwise("browsing"))
-        .select(F.col("window.start").alias("window_start"),
-                F.col("window.end").alias("window_end"),
-                "visitorid", "itemid", "event_count", "views", "carts", "transactions",
-                "intent_score", "recommendation_active", "recommended_itemid", "status",
-                "last_event_time", "last_kafka_time")
+        counts.withColumn(
+            "intent_score",
+            F.col("views") * 1 + F.col("carts") * 5 + F.col("transactions") * 10
+        )
+        .withColumn(
+            "recommendation_active",
+            (F.col("carts") > 0) & (F.col("transactions") == 0) & (F.col("intent_score") >= 5)
+        )
+        .withColumn(
+            "recommended_itemid",
+            F.when(F.col("recommendation_active"), F.col("itemid"))
+        )
+        .withColumn(
+            "status",
+            F.when(F.col("transactions") > 0, "purchased")
+            .when(F.col("recommendation_active"), "recommend")
+            .otherwise("browsing")
+        )
+        .select(
+            F.col("window.start").alias("window_start"),
+            F.col("window.end").alias("window_end"),
+            "visitorid", "itemid", "event_count", "views", "carts", "transactions",
+            "intent_score", "recommendation_active", "recommended_itemid", "status",
+            "last_event_time", "last_kafka_time"
+        )
     )
 
 

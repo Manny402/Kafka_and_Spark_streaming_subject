@@ -68,7 +68,7 @@ services:
     working_dir: /opt/project
     volumes:
       - ".:/opt/project"
-      - "./retailrocket:/opt/data:ro"
+      - "../retailrocket:/opt/data:ro"
     ports:
       - "127.0.0.1:4040:4040"
 
