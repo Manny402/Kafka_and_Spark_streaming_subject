@@ -2,36 +2,50 @@
 
 Theo dõi ý định mua theo cửa sổ trượt và gợi ý khách quay lại sản phẩm trong giỏ chưa mua.
 
-Repository gồm `README.md`, `docker-compose.yml`, `producer.py`, `requirements.txt` và `streaming_etl.py`. Hướng dẫn này dùng các file đó để chạy demo từ một máy mới; dataset tải riêng, còn `output/` và `checkpoints/` được sinh khi chạy. Mọi bước cần thiết đều có ngay bên dưới.
+Dự án được phân chia thành 2 phần độc lập tương ứng với cấu trúc yêu cầu của đề tài:
+* [Part_A/](Part_A/README.md): **Nền tảng lý thuyết & Nghiên cứu học thuật (30 điểm)** — Kiến trúc Spark Streaming, Recommender Systems, Kafka vs. Flume và tóm tắt paper.
+* [Part_B/](Part_B/README.md): **Hiện thực thực hành & Live Pipeline (70 điểm)** — Mã nguồn `producer.py`, `streaming_etl.py`, `docker-compose.yml`, `requirements.txt`.
+* [LAM_MIN_YEU_CAU_DE_TAI.md](LAM_MIN_YEU_CAU_DE_TAI.md): Bản làm mịn và bóc tách toàn bộ tiêu chí kỹ thuật, nghiệp vụ và barem điểm 100đ từ đề bài.
+* [KE_HOACH_PHAN_CONG_NHOM.md](KE_HOACH_PHAN_CONG_NHOM.md): Kế hoạch phân công nhiệm vụ chi tiết cho 6 thành viên trong nhóm.
 
-**Chạy lần đầu:** làm theo [phần 1](#1-chuẩn-bị), sau đó [demo ở phần 2](#2-demo-trực-tiếp). Hướng dẫn dùng **Windows PowerShell**, giả định máy đã cài **Docker Desktop**. Môi trường Python `.venv` được tạo ngay trong dự án.
+**Chạy lần đầu:** làm theo [phần 1](#1-chuẩn-bị), sau đó [demo ở phần 2](#2-demo-trực-tiếp). Mọi thao tác chạy kỹ thuật được thực hiện trong thư mục **`Part_B/`**.
 
-**Đã chạy trước đó:** mở Docker, chạy `docker compose up -d` tại thư mục dự án rồi làm phần 2. Nếu gặp lỗi, xem [phần 7](#7-xử-lý-lỗi-thường-gặp).
+---
 
-## 0. Luồng chạy tương ứng với các file
+## 0. Cấu trúc thư mục dự án
 
-```mermaid
-flowchart TD
-    REQ["requirements.txt"] -. "pip install: chuẩn bị thư viện" .-> P
-    DC["docker-compose.yml"] -. "1. khởi động" .-> K
-    DC -. "2. chạy kafka-init: tạo/kiểm tra topic" .-> T
-    DC -. "3. spark-submit: chạy ứng dụng" .-> S
-    CSV["retailrocket/events.csv"] -->|"đọc từng dòng / lấy item để demo"| P["producer.py<br/>chạy bằng Python trên máy của bạn"]
-    P -->|"JSON, key = visitorid<br/>127.0.0.1:9092"| K["Kafka broker trong container"]
-    K --> T["Topic retail-rocket-events<br/>ít nhất 2 partitions"]
-    T -->|"readStream qua kafka:19092"| S["streaming_etl.py<br/>chạy bằng Spark trong container"]
-    S -->|"write_batch"| PQ["output/intent/batch_.../<br/>kết quả Parquet"]
-    S -->|"BatchMetrics"| M["output/metrics/batch_....json<br/>số message, thời gian, watermark"]
-    S -->|"bảng kết quả + log"| LOG["Terminal: docker compose logs -f spark"]
-    S -->|"lưu offset, commit, state"| CP["checkpoints/retail-intent-v1/"]
-    CP -. "đọc lại khi khởi động lại" .-> S
+```text
+Kafka_and_Spark_streaming_subject/
+│
+├── Part_A/                                # PHẦN A: NỀN TẢNG LÝ THUYẾT & HỌC THUẬT (30 ĐIỂM)
+│   ├── README.md                          # Tổng quan và mục lục Part A
+│   ├── A1_Spark_Architecture/             # Đề mục A.1: Kiến trúc Spark Streaming & ETL
+│   │   ├── A1_1_DStream_vs_Structured_Streaming.ipynb
+│   │   ├── A1_1_DStream_vs_Structured_Streaming.html
+│   │   └── A1_2_ETL_Data_Architecture.ipynb
+│   ├── A2_Recommender_Systems/            # Đề mục A.2: Hệ thống gợi ý & Live Intent Scoring
+│   │   └── A2_Recommender_Systems_Spark_Streaming.ipynb
+│   └── A3_Ingestion_Kafka_vs_Flume/       # Đề mục A.3: Thu nhận phân tán Kafka vs. Flume
+│       └── A3_Kafka_vs_Flume.ipynb
+│
+├── Part_B/                                # PHẦN B: HIỆN THỰC THỰC HÀNH & PIPELINE (70 ĐIỂM)
+│   ├── README.md                          # Hướng dẫn chạy chi tiết Part B
+│   ├── docker-compose.yml                 # Dựng cụm Kafka KRaft & Spark Structured Streaming
+│   ├── producer.py                        # Bộ phát sinh sự kiện từ events.csv vào Kafka
+│   ├── streaming_etl.py                   # PySpark Streaming ETL (Window 10m, Watermark 5m, Recommender)
+│   ├── requirements.txt                   # Thư viện Python cho producer (kafka-python)
+│   ├── output/                            # Kết quả Parquet và metric latency JSON (sinh khi chạy)
+│   └── checkpoints/                       # Lưu trữ checkpoint phục hồi lỗi (sinh khi chạy)
+│
+├── retailrocket/                          # Thư mục chứa tập tin dữ liệu từ Kaggle
+│   └── events.csv                         # (Tải về và đặt tại đây)
+│
+├── LAM_MIN_YEU_CAU_DE_TAI.md              # Bóc tách và làm mịn toàn bộ yêu cầu đề tài
+├── KE_HOACH_PHAN_CONG_NHOM.md             # Kế hoạch và phân chia nhiệm vụ nhóm
+└── README.md                              # Tài liệu hướng dẫn chung dự án
 ```
 
-Mũi tên liền mô tả luồng dữ liệu/kết quả. Mũi tên nét đứt mô tả cài thư viện, khởi động hoặc khôi phục. `kafka-init` là một service khai báo trong `docker-compose.yml`, không có file `kafka-init.py` riêng. Kafka lưu sự kiện trong Docker volume `kafka-events`; thư mục `output/` lưu kết quả đã xử lý của Spark.
-
-**Thứ tự chạy:** Compose bật Kafka → tạo topic → chạy `streaming_etl.py` chờ đọc → bạn chạy `producer.py` → Spark tính toán và ghi kết quả. Producer và Spark là hai chương trình hoạt động độc lập, trao đổi qua Kafka.
-
-**Vai trò chính:** `producer.py` mô phỏng website phát hành vi; Kafka giữ sự kiện; Spark chạy `streaming_etl.py` để tính điểm và tạo gợi ý; `docker-compose.yml` chuẩn bị và nối các dịch vụ đó.
+---
 
 ## 1. Chuẩn bị
 
@@ -43,7 +57,7 @@ Giả định bạn đã cài Docker Desktop trên Windows. Mở ứng dụng v�
 | --- | --- |
 | Docker Desktop đã cài | Mở ứng dụng và chờ engine sẵn sàng |
 | Python | Cài [Python](https://www.python.org/downloads/), chọn nhánh **3.13** để dùng cùng nhánh đã kiểm thử producer. Bảo đảm gọi được `python` hoặc `py` từ PowerShell. |
-| Git hoặc file ZIP của repository | Dùng Git để clone; hoặc dùng Download ZIP như bước 1.2 |
+| Git hoặc file ZIP của repository | Dùng Git để clone; hoặc dùng Download ZIP |
 | Internet | Dùng khi tải dataset, image Docker, thư viện Python và Spark Kafka connector lần đầu |
 
 Mở **PowerShell** và chạy:
@@ -54,49 +68,26 @@ docker compose version
 docker info
 ```
 
-**Cần thấy:** cả `docker` và `docker compose` đều in được phiên bản; `docker info` có phần `Server` hoạt động. Nếu báo không kết nối được Docker Engine, xử lý ở phần 7 trước khi tiếp tục. Thông tin `docker --version` chỉ xác nhận có CLI, chưa xác nhận engine đã chạy.
+### 1.2. Mở thư mục thực hành Part_B
 
-Kafka, Spark, Java và PySpark được chuẩn bị trong container; bạn chỉ cài Python và Kafka client trên máy để chạy producer.
-
-### 1.2. Tải dự án và mở đúng thư mục
-
-Nếu dùng Git, chạy các lệnh sau trong thư mục bạn muốn lưu dự án:
+Sau khi clone hoặc mở repository, di chuyển vào thư mục **`Part_B`**:
 
 ```powershell
-git clone https://github.com/Manny402/Kafka_and_Spark_streaming_subject.git
-cd Kafka_and_Spark_streaming_subject
+cd Part_B
 ```
 
-Hoặc mở [repository](https://github.com/Manny402/Kafka_and_Spark_streaming_subject), chọn **Code → Download ZIP**, giải nén, mở thư mục vừa giải nén bằng VS Code rồi chọn **Terminal → New Terminal**.
-
-**Tất cả lệnh còn lại đều chạy tại thư mục có `docker-compose.yml`, `producer.py`, `streaming_etl.py` và `requirements.txt`.** Nếu dùng ZIP, tên thư mục có thể có hậu tố `-main`; không cần đổi tên, chỉ cần đứng đúng thư mục chứa các file trên.
+**Tất cả các lệnh chạy Docker và Python Producer bên dưới đều chạy tại thư mục `Part_B/`.**
 
 ### 1.3. Tải và đặt dataset
 
-1. Mở [Retail Rocket E-Commerce Dataset trên Kaggle](https://www.kaggle.com/datasets/retailrocket/ecommerce-dataset), đăng nhập nếu trang yêu cầu và tải dữ liệu.
-2. Giải nén để lấy file `events.csv`.
-3. Tạo thư mục `retailrocket` trong dự án, đặt `events.csv` trực tiếp vào đó.
+1. Mở [Retail Rocket E-Commerce Dataset trên Kaggle](https://www.kaggle.com/datasets/retailrocket/ecommerce-dataset), tải dữ liệu.
+2. Giải nén lấy file `events.csv`.
+3. Đặt `events.csv` vào thư mục `retailrocket/` ở thư mục gốc của dự án (hoặc trong `Part_B/retailrocket/`).
 
-Cấu trúc cần có:
-
-```text
-Kafka_and_Spark_streaming_subject/
-├── docker-compose.yml
-├── producer.py
-├── streaming_etl.py
-├── requirements.txt
-└── retailrocket/
-    └── events.csv
-```
-
-Dòng đầu file CSV phải là `timestamp,visitorid,event,itemid,transactionid`. Demo cũng cần CSV để lấy item; các file `category_tree.csv` và `item_properties*.csv` chưa được pipeline sử dụng. Repository hiện chưa chứa dataset, vì vậy cần tải riêng sau khi clone hoặc giải nén ZIP.
-
-Kiểm tra đường dẫn sau khi chép file:
-
-Windows PowerShell:
+Kiểm tra từ thư mục `Part_B/`:
 
 ```powershell
-Test-Path ./retailrocket/events.csv
+Test-Path ../retailrocket/events.csv
 ```
 
 Kết quả cần là `True`. Nếu file nằm ở `retailrocket/retailrocket/events.csv`, hãy chuyển lên đúng một cấp như sơ đồ.

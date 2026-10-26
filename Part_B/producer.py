@@ -2,14 +2,20 @@
 
 import argparse
 import csv
-import time
 from pathlib import Path
+import time
 
 from kafka import KafkaProducer
 from kafka.serializer import DefaultSerializer, JsonSerializer
 
 
-CSV_PATH = Path(__file__).resolve().parent / "retailrocket" / "events.csv"
+_PARENT = Path(__file__).resolve().parent
+# Check both Part_B/retailrocket/events.csv and project_root/retailrocket/events.csv
+if (_PARENT / "retailrocket" / "events.csv").is_file():
+    CSV_PATH = _PARENT / "retailrocket" / "events.csv"
+else:
+    CSV_PATH = _PARENT.parent / "retailrocket" / "events.csv"
+
 TOPIC = "retail-rocket-events"
 
 
