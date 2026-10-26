@@ -1,3 +1,12 @@
-# Host Python environment for producer.py.
-# PySpark runs in the pinned Spark Docker image; its Kafka connector is a JVM package.
+# Host Python environment for kafka_producer.py and the v2 notebook.
+# Spark's Kafka connector is a JVM package fetched when a Kafka session starts.
 kafka-python==3.0.11
+pyspark==4.0.1
+pandas
+numpy
+matplotlib
+pyarrow
+nbformat
+nbconvert
+notebook
+ipykernel

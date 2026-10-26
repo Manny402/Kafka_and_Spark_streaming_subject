@@ -1,0 +1,12 @@
+FROM apache/spark:4.2.0-python3
+
+USER root
+RUN python3 -m pip install --no-cache-dir \
+    pandas numpy matplotlib pyarrow kafka-python \
+    nbformat nbconvert notebook ipykernel
+
+ENV PYSPARK_PYTHON=python3 \
+    PYSPARK_DRIVER_PYTHON=python3 \
+    PYTHONPATH=/opt/spark/python/lib/pyspark.zip:/opt/spark/python/lib/py4j-0.10.9.9-src.zip
+
+USER spark
