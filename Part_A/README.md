@@ -12,13 +12,13 @@ Các nội dung nghiên cứu lý thuyết được chia thành 3 chủ đề t�
 Part_A/
 ├── README.md                                    # Mục lục & tổng quan Part A
 ├── A1_Spark_Architecture/                       # Đề mục A.1: Kiến trúc Spark Streaming & ETL
-│   ├── A1_1_DStream_vs_Structured_Streaming.ipynb  (Từ thành viên: Nguyễn Đăng Mạnh)
-│   ├── A1_1_DStream_vs_Structured_Streaming.html   (Bản xuất HTML trực quan)
-│   └── A1_2_ETL_Data_Architecture.ipynb          (Từ thành viên: Nguyễn Tuấn Phong)
+│   ├── A1_1_DStream_vs_Structured_Streaming.ipynb
+│   ├── A1_1_DStream_vs_Structured_Streaming.html
+│   └── A1_2_ETL_Data_Architecture.ipynb
 ├── A2_Recommender_Systems/                      # Đề mục A.2: Hệ thống gợi ý & Live Intent Scoring
-│   └── A2_Recommender_Systems_Spark_Streaming.ipynb (Từ thành viên: Trần Minh Đức)
+│   └── A2_Recommender_Systems_Spark_Streaming.ipynb
 └── A3_Ingestion_Kafka_vs_Flume/                 # Đề mục A.3: Thu nhận phân tán Kafka vs Flume
-    └── A3_Kafka_vs_Flume.ipynb                  (Từ thành viên: Vũ Tiến Đạt)
+    └── A3_Kafka_vs_Flume.ipynb
 ```
 
 ---
