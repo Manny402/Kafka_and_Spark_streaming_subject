@@ -64,13 +64,45 @@ services:
       - /opt/project/streaming_etl.py
     environment:
       PYTHONUNBUFFERED: "1"
+      PIPELINE_ID: "recommender-v3"
+      RECOMMENDATION_POLICY: "strict_cart"
+      INTENT_THRESHOLD: "5"
+      RECOMMENDATION_TOP_K: "3"
+      STREAM_WINDOW: "10 minutes"
+      STREAM_SLIDE: "5 minutes"
+      STREAM_WATERMARK: "5 minutes"
+      MODEL_PATH: "/opt/project/models/item-cf-v1"
+      STREAM_OUTPUT: "/opt/project/output/recommender-v3"
+      STREAM_CHECKPOINT_ROOT: "/opt/project/checkpoints/recommender-v3"
     stop_grace_period: 45s
     working_dir: /opt/project
     volumes:
       - ".:/opt/project"
       - "../retailrocket:/opt/data:ro"
+      - "../tests:/opt/tests:ro"
     ports:
       - "127.0.0.1:4040:4040"
+
+  model-builder:
+    profiles: ["tools"]
+    image: apache/spark:4.2.0-python3
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - local[2]
+      - /opt/project/recommendation.py
+      - --build-model
+      - --history-end-ms
+      - "${MODEL_HISTORY_END_MS:-1442545187789}"
+      - --sample-percent
+      - "${MODEL_SAMPLE_PERCENT:-5}"
+    environment:
+      PYTHONUNBUFFERED: "1"
+    working_dir: /opt/project
+    volumes:
+      - ".:/opt/project"
+      - "../retailrocket:/opt/data:ro"
+      - "../tests:/opt/tests:ro"
 
 volumes:
   kafka-events:

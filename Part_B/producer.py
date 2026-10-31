@@ -10,7 +10,7 @@ from kafka.serializer import DefaultSerializer, JsonSerializer
 
 
 _PARENT = Path(__file__).resolve().parent
-# Check both Part_B/retailrocket/events.csv and project_root/retailrocket/events.csv
+
 if (_PARENT / "retailrocket" / "events.csv").is_file():
     CSV_PATH = _PARENT / "retailrocket" / "events.csv"
 else:
