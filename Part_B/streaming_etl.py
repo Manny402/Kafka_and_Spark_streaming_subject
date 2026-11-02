@@ -1,4 +1,4 @@
-"""Kafka -> validated events -> intent windows -> Item-CF recommendations."""
+"""Kafka -> stateful realtime intent -> category-tree recommendations."""
 
 import json
 import os
@@ -14,8 +14,8 @@ from recommendation import (
     RECOMMENDATION_COLUMNS,
     eligible_expression,
     generate_recommendations,
-    load_model,
 )
+from category_catalog import load_catalog
 
 
 EVENT_SCHEMA = T.StructType([
@@ -52,7 +52,8 @@ RECOMMENDATION_SCHEMA = T.StructType([
     T.StructField("rank", T.IntegerType(), False),
     T.StructField("source", T.StringType(), False),
     T.StructField("rec_score", T.DoubleType(), True),
-    T.StructField("popularity_score", T.DoubleType(), True),
+    T.StructField("candidate_categoryid", T.LongType(), False),
+    T.StructField("category_similarity", T.DoubleType(), False),
     T.StructField("contributing_seed_itemids", T.ArrayType(T.LongType()), False),
     T.StructField("last_updated_batch", T.LongType(), False),
 ])
@@ -64,7 +65,7 @@ PUBLICATION_SCHEMA = T.StructType([
     T.StructField("batch_id", T.LongType(), False),
     T.StructField("predecessor_batch_id", T.LongType(), True),
     T.StructField("artifact_path", T.StringType(), True),
-    T.StructField("model_version", T.StringType(), True),
+    T.StructField("catalog_version", T.StringType(), True),
     T.StructField("policy", T.StringType(), True),
     T.StructField("updated_window_rows", T.LongType(), True),
     T.StructField("intent_snapshot_rows", T.LongType(), True),
@@ -79,7 +80,9 @@ PUBLICATION_SCHEMA = T.StructType([
         T.StructField("candidate_itemid", T.LongType(), False),
         T.StructField("source", T.StringType(), False),
         T.StructField("rec_score", T.DoubleType(), True),
-        T.StructField("popularity_score", T.DoubleType(), True),
+        T.StructField("candidate_categoryid", T.LongType(), False),
+        T.StructField("category_similarity", T.DoubleType(), False),
+        T.StructField("contributing_seed_itemids", T.ArrayType(T.LongType()), False),
     ])), True),
 ])
 
@@ -103,10 +106,10 @@ def _positive_int(name, default):
 
 def load_config():
     """Read all runtime configuration once and validate it before Spark starts."""
-    policy = os.getenv("RECOMMENDATION_POLICY", "strict_cart")
+    policy = os.getenv("RECOMMENDATION_POLICY", "extended")
     if policy not in {"strict_cart", "extended"}:
         raise ValueError("RECOMMENDATION_POLICY must be strict_cart or extended")
-    pipeline_id = os.getenv("PIPELINE_ID", "recommender-v3")
+    pipeline_id = os.getenv("PIPELINE_ID", "category-realtime-v1")
     if not pipeline_id or any(char in pipeline_id for char in r'\/:*?"<>|'):
         raise ValueError("PIPELINE_ID is empty or contains path-unsafe characters")
     return {
@@ -118,10 +121,10 @@ def load_config():
         "slide": os.getenv("STREAM_SLIDE", "5 minutes"),
         "watermark": os.getenv("STREAM_WATERMARK", "5 minutes"),
         "trigger": os.getenv("STREAM_TRIGGER", "5 seconds"),
-        "model_path": Path(os.getenv("MODEL_PATH", "/opt/project/models/item-cf-v1")),
-        "output_root": Path(os.getenv("STREAM_OUTPUT", "/opt/project/output/recommender-v3")),
+        "catalog_path": Path(os.getenv("CATEGORY_CATALOG_PATH", "/opt/project/catalog/category-v1")),
+        "output_root": Path(os.getenv("STREAM_OUTPUT", "/opt/project/output/category-realtime-v1")),
         "checkpoint_root": Path(os.getenv(
-            "STREAM_CHECKPOINT_ROOT", "/opt/project/checkpoints/recommender-v3")),
+            "STREAM_CHECKPOINT_ROOT", "/opt/project/checkpoints/category-realtime-v1")),
         "bootstrap_servers": os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:19092"),
         "topic": os.getenv("KAFKA_TOPIC", "retail-rocket-events"),
         "max_offsets": _positive_int("MAX_OFFSETS_PER_TRIGGER", 1000),
@@ -129,12 +132,15 @@ def load_config():
     }
 
 
-def pipeline_metadata(config, model_manifest):
+def pipeline_metadata(config, catalog_manifest):
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "pipeline_id": config["pipeline_id"],
-        "algorithm_version": "item-cf-v1",
-        "model_version": model_manifest["model_version"],
+        "algorithm_version": "category-tree-v1",
+        "catalog_version": catalog_manifest["catalog_version"],
+        "source_sha256": catalog_manifest.get("source_sha256", {}),
+        "weights": {"view": 1, "addtocart": 5, "transaction": 10},
+        "topic": config["topic"],
         "policy": config["policy"],
         "threshold": config["threshold"],
         "top_k": config["top_k"],
@@ -144,11 +150,11 @@ def pipeline_metadata(config, model_manifest):
     }
 
 
-def ensure_pipeline_metadata(config, model_manifest):
+def ensure_pipeline_metadata(config, catalog_manifest):
     """Prevent a checkpoint/output namespace from silently changing semantics."""
     root = config["output_root"]
     root.mkdir(parents=True, exist_ok=True)
-    expected = pipeline_metadata(config, model_manifest)
+    expected = pipeline_metadata(config, catalog_manifest)
     target = root / "pipeline.json"
     if target.is_file():
         actual = json.loads(target.read_text(encoding="utf-8"))
@@ -296,16 +302,21 @@ def _merge_recommendations(previous, generated, affected_keys, batch_id):
     return retained.unionByName(generated.select(*RECOMMENDATION_SCHEMA.fieldNames()))
 
 
-def _recommendation_updates(context, recommendations, affected_keys, config, batch_id):
+def _recommendation_updates(context, recommendations, affected_keys, config, batch_id,
+                            item_categories):
     affected_context = context.join(affected_keys, WINDOW_KEYS, "inner")
-    seed_summary = (affected_context.groupBy(*WINDOW_KEYS)
+    seed_summary = (affected_context.join(item_categories, "itemid", "left")
+        .groupBy(*WINDOW_KEYS)
         .agg(F.sort_array(F.collect_set(
             F.when(F.col("recommendation_active"), F.col("itemid"))
-        )).alias("eligible_seed_itemids")))
+        )).alias("eligible_seed_itemids"),
+             F.count(F.when(F.col("recommendation_active") & F.col("categoryid").isNotNull(), 1))
+              .alias("mapped_seeds")))
     rec_summary = (recommendations.join(affected_keys, WINDOW_KEYS, "inner")
         .groupBy(*WINDOW_KEYS)
         .agg(F.sort_array(F.collect_list(F.struct(
-            "rank", "candidate_itemid", "source", "rec_score", "popularity_score"
+            "rank", "candidate_itemid", "source", "rec_score", "candidate_categoryid",
+            "category_similarity", "contributing_seed_itemids"
         ))).alias("recommendations")))
     return (affected_keys.join(seed_summary, WINDOW_KEYS, "left")
         .join(rec_summary, WINDOW_KEYS, "left")
@@ -315,14 +326,16 @@ def _recommendation_updates(context, recommendations, affected_keys, config, bat
             "recommendations",
             F.array().cast(
                 "array<struct<rank:int,candidate_itemid:bigint,source:string,"
-                "rec_score:double,popularity_score:double>>")))
+                "rec_score:double,candidate_categoryid:bigint,category_similarity:double,"
+                "contributing_seed_itemids:array<bigint>>>")))
         .withColumn(
             "generation_status",
             F.when(F.size("eligible_seed_itemids") == 0, "no_eligible_seed")
+             .when(F.col("mapped_seeds") == 0, "missing_category")
              .when(F.size("recommendations") == 0, "no_candidate")
              .otherwise("recommended"))
         .withColumn("kind", F.lit("recommendation_update"))
-        .withColumn("schema_version", F.lit(1))
+        .withColumn("schema_version", F.lit(2))
         .withColumn("pipeline_id", F.lit(config["pipeline_id"]))
         .withColumn("batch_id", F.lit(batch_id).cast("long"))
         .select("kind", "schema_version", "pipeline_id", "batch_id", *WINDOW_KEYS,
@@ -343,8 +356,8 @@ def _publish_jsonl(output_root, batch_id, commit, update_json):
     temporary.replace(target)
 
 
-def write_batch(batch, batch_id, output_root, similarity, popularity,
-                config, model_manifest):
+def write_batch(batch, batch_id, output_root, item_categories, category_similarity,
+                config, catalog_manifest):
     """Materialize current state, rank changed windows and publish one batch atomically."""
     started = time.monotonic()
     output_root = Path(output_root)
@@ -355,11 +368,16 @@ def write_batch(batch, batch_id, output_root, similarity, popularity,
         existing = _read_commit(target)
         if existing is not None:
             if (existing.get("pipeline_id") != config["pipeline_id"]
-                    or existing.get("model_version") != model_manifest["model_version"]
+                    or existing.get("schema_version") != 2
+                    or existing.get("catalog_version") != catalog_manifest["catalog_version"]
                     or existing.get("policy") != config["policy"]):
                 raise ValueError(f"Existing publication does not match runtime: {target}")
             log_event("sink_batch_reused", batch_id=batch_id,
                       updated_window_rows=updated_rows)
+            return
+
+        if updated_rows == 0:
+            log_event("empty_state_batch", batch_id=batch_id)
             return
 
         spark = batch.sparkSession
@@ -369,8 +387,8 @@ def write_batch(batch, batch_id, output_root, similarity, popularity,
         affected_keys = batch.select(*WINDOW_KEYS).distinct().persist()
         affected_context = current_intent.join(affected_keys, WINDOW_KEYS, "inner")
         generated = generate_recommendations(
-            affected_context, similarity, popularity,
-            config["policy"], config["threshold"], config["top_k"])
+            affected_context, item_categories, category_similarity,
+            config["threshold"], config["top_k"], config["policy"])
         current_recommendations = _merge_recommendations(
             previous_recommendations, generated, affected_keys, batch_id).persist()
 
@@ -387,23 +405,29 @@ def write_batch(batch, batch_id, output_root, similarity, popularity,
         intent_rows = current_intent.count()
         recommendation_rows = current_recommendations.count()
         update_json = _recommendation_updates(
-            current_intent, current_recommendations, affected_keys, config, batch_id
+            current_intent, current_recommendations, affected_keys, config, batch_id,
+            item_categories
         ).toJSON().collect()
+        intent_json = (batch.withColumn("kind", F.lit("intent_update"))
+                       .withColumn("schema_version", F.lit(2))
+                       .withColumn("pipeline_id", F.lit(config["pipeline_id"]))
+                       .withColumn("batch_id", F.lit(batch_id).cast("long"))
+                       .toJSON().collect())
         commit = {
             "kind": "batch_commit",
-            "schema_version": 1,
+            "schema_version": 2,
             "pipeline_id": config["pipeline_id"],
             "batch_id": int(batch_id),
             "predecessor_batch_id": (
                 predecessor["batch_id"] if predecessor is not None else None),
             "artifact_path": attempt_relative.as_posix(),
-            "model_version": model_manifest["model_version"],
+            "catalog_version": catalog_manifest["catalog_version"],
             "policy": config["policy"],
             "updated_window_rows": updated_rows,
             "intent_snapshot_rows": intent_rows,
             "recommendation_snapshot_rows": recommendation_rows,
         }
-        _publish_jsonl(output_root, batch_id, commit, update_json)
+        _publish_jsonl(output_root, batch_id, commit, intent_json + update_json)
         log_event(
             "sink_batch", batch_id=batch_id, updated_window_rows=updated_rows,
             affected_user_windows=len(update_json),
@@ -421,8 +445,21 @@ class BatchMetrics(StreamingQueryListener):
     def __init__(self, output_root):
         super().__init__()
         self.output_root = Path(output_root)
+        self.names = {}
+
+    def _status(self, query_id, **fields):
+        name = self.names.get(str(query_id), str(query_id))
+        folder = self.output_root / "queries"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{name}.json"
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"query_id": str(query_id), "query_name": name,
+                                         **fields}, default=str), encoding="utf-8")
+        temporary.replace(target)
 
     def onQueryStarted(self, event):
+        self.names[str(event.id)] = event.name
+        self._status(event.id, run_id=str(event.runId), status="running")
         log_event("query_started", query_id=str(event.id), run_id=str(event.runId),
                   name=event.name)
 
@@ -447,6 +484,9 @@ class BatchMetrics(StreamingQueryListener):
                                      for s in progress.get("stateOperators", [])),
             "state_memory_bytes": sum(s.get("memoryUsedBytes", 0)
                                       for s in progress.get("stateOperators", [])),
+            "state_rows_removed": sum(s.get("numRowsRemoved", 0)
+                                      for s in progress.get("stateOperators", [])),
+            "sources": progress.get("sources", []),
         }
         folder = self.output_root / "metrics" / name
         folder.mkdir(parents=True, exist_ok=True)
@@ -461,6 +501,7 @@ class BatchMetrics(StreamingQueryListener):
         pass
 
     def onQueryTerminated(self, event):
+        self._status(event.id, run_id=str(event.runId), status="terminated", error=event.exception)
         log_event("query_terminated", query_id=str(event.id), error=event.exception)
 
 
@@ -478,20 +519,20 @@ def clean_writer(spark, config):
                      "event_date"))
     return _with_trigger(
         clean.writeStream.queryName("retail_clean_events_v3")
-        .outputMode("append").format("parquet")
+        .outputMode("append").format("parquet").partitionBy("event_date")
         .option("path", str(config["output_root"] / "clean_events"))
         .option("checkpointLocation", str(config["checkpoint_root"] / "clean")),
         config)
 
 
-def intent_writer(spark, config, similarity, popularity, model_manifest):
+def intent_writer(spark, config, item_categories, category_similarity, catalog_manifest):
     intent = compute_intent(parse_events(kafka_stream(spark, config)), config)
     return _with_trigger(
         intent.writeStream.queryName("retail_intent_v3").outputMode("update")
         .option("checkpointLocation", str(config["checkpoint_root"] / "intent"))
         .foreachBatch(lambda batch, batch_id: write_batch(
-            batch, batch_id, config["output_root"], similarity, popularity,
-            config, model_manifest)),
+            batch, batch_id, config["output_root"], item_categories, category_similarity,
+            config, catalog_manifest)),
         config)
 
 
@@ -517,8 +558,10 @@ def main():
              .config("spark.sql.shuffle.partitions", "2")
              .getOrCreate())
     spark.sparkContext.setLogLevel("WARN")
-    similarity, popularity, model_manifest = load_model(spark, config["model_path"])
-    ensure_pipeline_metadata(config, model_manifest)
+    item_categories, category_similarity, catalog_manifest = load_catalog(spark, config["catalog_path"])
+    item_categories = item_categories.cache()
+    category_similarity = category_similarity.cache()
+    ensure_pipeline_metadata(config, catalog_manifest)
     listener = BatchMetrics(config["output_root"])
     spark.streams.addListener(listener)
     queries = []
@@ -534,7 +577,7 @@ def main():
         if config["available_now"]:
             clean = clean_writer(spark, config).start()
             intent = intent_writer(
-                spark, config, similarity, popularity, model_manifest).start()
+                spark, config, item_categories, category_similarity, catalog_manifest).start()
             queries.extend([clean, intent])
             clean.awaitTermination()
             intent.awaitTermination()
@@ -545,7 +588,7 @@ def main():
             console = console_writer(spark, config).start()
             clean = clean_writer(spark, config).start()
             intent = intent_writer(
-                spark, config, similarity, popularity, model_manifest).start()
+                spark, config, item_categories, category_similarity, catalog_manifest).start()
             queries.extend([console, clean, intent])
             spark.streams.awaitAnyTermination()
     finally:

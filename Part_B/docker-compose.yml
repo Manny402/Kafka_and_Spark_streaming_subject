@@ -53,6 +53,8 @@ services:
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+      catalog-init:
+        condition: service_completed_successfully
     command:
       - /opt/spark/bin/spark-submit
       - --master
@@ -64,16 +66,17 @@ services:
       - /opt/project/streaming_etl.py
     environment:
       PYTHONUNBUFFERED: "1"
-      PIPELINE_ID: "recommender-v3"
-      RECOMMENDATION_POLICY: "strict_cart"
+      PIPELINE_ID: "category-realtime-v1"
+      RECOMMENDATION_POLICY: "extended"
       INTENT_THRESHOLD: "5"
       RECOMMENDATION_TOP_K: "3"
       STREAM_WINDOW: "10 minutes"
       STREAM_SLIDE: "5 minutes"
       STREAM_WATERMARK: "5 minutes"
-      MODEL_PATH: "/opt/project/models/item-cf-v1"
-      STREAM_OUTPUT: "/opt/project/output/recommender-v3"
-      STREAM_CHECKPOINT_ROOT: "/opt/project/checkpoints/recommender-v3"
+      STREAM_TRIGGER: "5 seconds"
+      CATEGORY_CATALOG_PATH: "/opt/project/catalog/category-v1"
+      STREAM_OUTPUT: "/opt/project/output/category-realtime-v1"
+      STREAM_CHECKPOINT_ROOT: "/opt/project/checkpoints/category-realtime-v1"
     stop_grace_period: 45s
     working_dir: /opt/project
     volumes:
@@ -83,19 +86,14 @@ services:
     ports:
       - "127.0.0.1:4040:4040"
 
-  model-builder:
-    profiles: ["tools"]
+  catalog-init:
     image: apache/spark:4.2.0-python3
     command:
       - /opt/spark/bin/spark-submit
       - --master
       - local[2]
-      - /opt/project/recommendation.py
-      - --build-model
-      - --history-end-ms
-      - "${MODEL_HISTORY_END_MS:-1442545187789}"
-      - --sample-percent
-      - "${MODEL_SAMPLE_PERCENT:-5}"
+      - /opt/project/category_catalog.py
+      - --build
     environment:
       PYTHONUNBUFFERED: "1"
     working_dir: /opt/project
